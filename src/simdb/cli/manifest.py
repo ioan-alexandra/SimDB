@@ -1,24 +1,163 @@
 import os
 import urllib.parse
 import warnings
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Annotated, Any, Dict, Iterable, List, Literal, Optional, TextIO
+from typing import (
+    Annotated,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Optional,
+    TextIO,
+    Tuple,
+    Union,
+)
 
 import numpy as np
 import yaml
 from netCDF4 import Dataset
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
     PrivateAttr,
     UrlConstraints,
+    ValidationError,
     field_validator,
     model_validator,
 )
 
 from simdb.imas.utils import SimDBUrl
+
+# Path to an item in the manifest, e.g. ("inputs", 0, "uri").
+Location = Tuple[Union[str, int], ...]
+
+
+@dataclass(frozen=True)
+class ManifestError:
+    """A single problem found in a manifest file.
+
+    ``line`` and ``column`` are 1-based positions in the manifest file, when known.
+    """
+
+    message: str
+    location: Location = ()
+    line: Optional[int] = None
+    column: Optional[int] = None
+
+    def describe(self, path: Path) -> str:
+        position = str(path)
+        if self.line is not None:
+            position += f":{self.line}"
+            if self.column is not None:
+                position += f":{self.column}"
+        if self.location:
+            return f"{position}: {_format_location(self.location)}: {self.message}"
+        return f"{position}: {self.message}"
+
+
+class InvalidManifest(ValueError):
+    """Exception raised when a manifest file cannot be read or fails to validate."""
+
+    def __init__(self, path: Path, errors: List[ManifestError]) -> None:
+        self.path = path
+        self.errors = errors
+        count = f"{len(errors)} error{'s' if len(errors) != 1 else ''}"
+        lines = [f"invalid manifest {path} ({count}):"]
+        lines += [f"  {error.describe(path)}" for error in errors]
+        super().__init__("\n".join(lines))
+
+    @classmethod
+    def from_yaml_error(cls, path: Path, err: yaml.YAMLError) -> "InvalidManifest":
+        if not isinstance(err, yaml.MarkedYAMLError) or err.problem is None:
+            return cls(path, [ManifestError(str(err))])
+        message = err.problem
+        if err.context and err.context_mark:
+            message += f" ({err.context} at line {err.context_mark.line + 1})"
+        mark = err.problem_mark or err.context_mark
+        return cls(
+            path,
+            [
+                ManifestError(
+                    message,
+                    line=mark.line + 1 if mark else None,
+                    column=mark.column + 1 if mark else None,
+                )
+            ],
+        )
+
+    @classmethod
+    def from_validation_error(
+        cls, path: Path, err: ValidationError, marks: Dict[Location, yaml.Mark]
+    ) -> "InvalidManifest":
+        errors = []
+        for error in err.errors(include_url=False):
+            location = tuple(error["loc"])
+            message = error["msg"]
+            ctx = error.get("ctx") or {}
+            if error["type"] == "value_error" and "error" in ctx:
+                # Drop pydantic's "Value error, " prefix from our own validators.
+                message = str(ctx["error"])
+            mark = _find_mark(marks, location)
+            errors.append(
+                ManifestError(
+                    message,
+                    location,
+                    line=mark.line + 1 if mark else None,
+                    column=mark.column + 1 if mark else None,
+                )
+            )
+        # Report in file order, with errors that have no position last.
+        errors.sort(key=lambda e: (e.line is None, e.line or 0, e.column or 0))
+        return cls(path, errors)
+
+
+def _format_location(location: Location) -> str:
+    """Format a location as e.g. ``inputs[0].uri``."""
+    text = ""
+    for part in location:
+        if isinstance(part, int):
+            text += f"[{part}]"
+        else:
+            text += f".{part}" if text else str(part)
+    return text
+
+
+def _source_marks(
+    node: yaml.Node, location: Location = ()
+) -> Dict[Location, yaml.Mark]:
+    """Map the location of every mapping key and sequence item to its source mark."""
+    marks: Dict[Location, yaml.Mark] = {}
+    if isinstance(node, yaml.MappingNode):
+        for key_node, value_node in node.value:
+            child = (*location, str(key_node.value))
+            marks.update(_source_marks(value_node, child))
+            marks[child] = key_node.start_mark
+    elif isinstance(node, yaml.SequenceNode):
+        for index, item_node in enumerate(node.value):
+            child = (*location, index)
+            marks.update(_source_marks(item_node, child))
+            marks[child] = item_node.start_mark
+    return marks
+
+
+def _find_mark(
+    marks: Dict[Location, yaml.Mark], location: Location
+) -> Optional[yaml.Mark]:
+    """Find the source mark for a location, falling back to its closest parent.
+
+    Missing fields (e.g. ``inputs[0].uri``) are reported at their parent item.
+    """
+    while location:
+        if location in marks:
+            return marks[location]
+        location = location[:-1]
+    return None
 
 
 def _expand_path(path: Path, base_path: Path) -> Path:
@@ -129,6 +268,24 @@ def _convert_v1_metadata(metadata: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return converted
 
 
+def _validate_metadata_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    forbidden_characters = {":", "=", "#"}
+    if len(item) != 1:
+        raise ValueError("metadata values should be a name value pair")
+    name = next(iter(item))
+    bad_chars = set(name).intersection(forbidden_characters)
+    if bad_chars:
+        raise ValueError(
+            f"invalid metadata field name {name} - "
+            f"contains forbidden character(s): {', '.join(bad_chars)}"
+        )
+    return item
+
+
+# Validated per item so that errors point at the offending metadata entry.
+MetadataItem = Annotated[Dict[str, Any], AfterValidator(_validate_metadata_item)]
+
+
 class ManifestV1(BaseModel):
     """Manifest schema for version 1.
 
@@ -170,7 +327,7 @@ class Manifest(BaseModel):
     responsible_name: Optional[str] = None
     inputs_raw: List[Source] = Field(default_factory=list, alias="inputs")
     outputs_raw: List[Sink] = Field(default_factory=list, alias="outputs")
-    metadata_raw: List[Dict[str, Any]] = Field(default_factory=list, alias="metadata")
+    metadata_raw: List[MetadataItem] = Field(default_factory=list, alias="metadata")
 
     _path: Path = PrivateAttr(default_factory=Path)
     _inputs: List[Source] = PrivateAttr(default_factory=list)
@@ -211,22 +368,6 @@ class Manifest(BaseModel):
     def validate_alias(cls, v: Optional[str]) -> Optional[str]:
         if v is not None and urllib.parse.quote(v) != v:
             raise ValueError(f"illegal characters in alias: {v}")
-        return v
-
-    @field_validator("metadata_raw")
-    @classmethod
-    def validate_metadata(cls, v: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        forbidden_characters = {":", "=", "#"}
-        for item in v:
-            if len(item) != 1:
-                raise ValueError("metadata values should be a name value pair")
-            name = next(iter(item))
-            bad_chars = set(name).intersection(forbidden_characters)
-            if bad_chars:
-                raise ValueError(
-                    f"invalid metadata field name {name} - "
-                    f"contains forbidden character(s): {', '.join(bad_chars)}"
-                )
         return v
 
     @field_validator("inputs_raw", "outputs_raw")
@@ -305,13 +446,24 @@ class Manifest(BaseModel):
         return loader
 
     @classmethod
+    def _read_yaml(cls, file_path: Path) -> Tuple[Any, Dict[Location, yaml.Mark]]:
+        """Read a YAML file, returning its data and the source mark of each item."""
+        with file_path.open() as file:
+            loader = cls._get_loader()(file)
+            try:
+                node = loader.get_single_node()
+                if node is None:
+                    return None, {}
+                return loader.construct_document(node), _source_marks(node)
+            except yaml.YAMLError as err:
+                raise InvalidManifest.from_yaml_error(file_path, err) from err
+            finally:
+                loader.dispose()
+
+    @classmethod
     def from_template(cls) -> "Manifest":
         dir_path = Path(__file__).resolve().parent
-        with (dir_path / "template.yaml").open() as file:
-            try:
-                raw_data = yaml.load(file, Loader=cls._get_loader())
-            except yaml.YAMLError as err:
-                raise ValueError("badly formatted manifest") from err
+        raw_data, _ = cls._read_yaml(dir_path / "template.yaml")
 
         model = cls.model_validate(raw_data, context={"skip_glob_check": True})
         model._path = dir_path / "template.yaml"
@@ -321,18 +473,26 @@ class Manifest(BaseModel):
     def load_from_file(
         cls, file_path: Path, overrides: Optional[dict] = None
     ) -> "Manifest":
-        with file_path.open() as file:
-            try:
-                raw_data = yaml.load(file, Loader=cls._get_loader())
-            except yaml.YAMLError as err:
-                raise ValueError("badly formatted manifest") from err
+        raw_data, marks = cls._read_yaml(file_path)
 
-        if overrides:
-            raw_data.update(overrides)
+        if isinstance(raw_data, dict):
+            if overrides:
+                raw_data.update(overrides)
+                # Overridden values do not come from the file.
+                marks = {k: v for k, v in marks.items() if k[0] not in overrides}
+            if raw_data.get("manifest_version", raw_data.get("version")) == 1:
+                # Version 1 metadata is restructured before validation, so item
+                # locations no longer match the file.
+                marks = {
+                    k: v for k, v in marks.items() if k[0] != "metadata" or len(k) == 1
+                }
 
-        model = cls.model_validate(
-            raw_data, context={"base_path": file_path.absolute().parent}
-        )
+        try:
+            model = cls.model_validate(
+                raw_data, context={"base_path": file_path.absolute().parent}
+            )
+        except ValidationError as err:
+            raise InvalidManifest.from_validation_error(file_path, err, marks) from err
         model._path = file_path
         return model
 

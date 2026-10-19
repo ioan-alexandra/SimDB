@@ -1,9 +1,8 @@
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
-from simdb.cli.manifest import DataType, Manifest
+from simdb.cli.manifest import DataType, InvalidManifest, Manifest
 
 
 def test_valid_manifest_loading_and_validation(tmp_path):
@@ -107,7 +106,7 @@ outputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(ValidationError, match="Input should be 2"):
+    with pytest.raises(InvalidManifest, match="Input should be 2"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -120,7 +119,7 @@ outputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(ValidationError, match="Input should be 2"):
+    with pytest.raises(InvalidManifest, match="Input should be 2"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -134,7 +133,7 @@ unknown_field: true
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+    with pytest.raises(InvalidManifest, match="Extra inputs are not permitted"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -148,7 +147,7 @@ outputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(ValidationError, match="illegal characters in alias"):
+    with pytest.raises(InvalidManifest, match="illegal characters in alias"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -163,7 +162,7 @@ outputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(ValidationError, match="Duplicate URI found in inputs"):
+    with pytest.raises(InvalidManifest, match="Duplicate URI found in inputs"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -178,7 +177,7 @@ metadata:
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(ValidationError, match="contains forbidden character"):
+    with pytest.raises(InvalidManifest, match="contains forbidden character"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -192,5 +191,78 @@ outputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(ValidationError, match="No files found matching path"):
+    with pytest.raises(InvalidManifest, match="No files found matching path"):
         Manifest.load_from_file(manifest_file)
+
+
+def test_yaml_syntax_error_reports_line_and_reason(tmp_path):
+    manifest_yaml = """\
+manifest_version: 2
+inputs: []
+ outputs: []
+"""
+    manifest_file = tmp_path / "manifest.yaml"
+    manifest_file.write_text(manifest_yaml)
+
+    with pytest.raises(InvalidManifest) as excinfo:
+        Manifest.load_from_file(manifest_file)
+
+    [error] = excinfo.value.errors
+    assert (error.line, error.column) == (3, 2)
+    assert "expected <block end>" in error.message
+    assert f"{manifest_file}:3:2: expected <block end>" in str(excinfo.value)
+
+
+def test_validation_errors_report_location_and_line(tmp_path):
+    manifest_yaml = """\
+manifest_version: 2
+inputs:
+  - uri: imas:///user?shot=10000&run=0&database=west
+  - path: /some/file
+outputs:
+  - uri: foo:///bar
+metadata:
+  - machine: ITER
+  - "machine:name": value
+unknown_field: true
+"""
+    manifest_file = tmp_path / "manifest.yaml"
+    manifest_file.write_text(manifest_yaml)
+
+    with pytest.raises(InvalidManifest) as excinfo:
+        Manifest.load_from_file(manifest_file)
+
+    errors = [(e.line, e.column, e.location, e.message) for e in excinfo.value.errors]
+    assert errors == [
+        # A missing field is reported at its parent item.
+        (4, 5, ("inputs", 1, "uri"), "Field required"),
+        (4, 5, ("inputs", 1, "path"), "Extra inputs are not permitted"),
+        (6, 5, ("outputs", 0, "uri"), "URL scheme should be 'file' or 'imas'"),
+        (
+            9,
+            5,
+            ("metadata", 1),
+            "invalid metadata field name machine:name - "
+            "contains forbidden character(s): :",
+        ),
+        (10, 1, ("unknown_field",), "Extra inputs are not permitted"),
+    ]
+    assert f"{manifest_file}:6:5: outputs[0].uri: URL scheme" in str(excinfo.value)
+
+
+def test_overridden_values_are_not_reported_at_file_lines(tmp_path):
+    manifest_yaml = """\
+manifest_version: 2
+alias: valid-alias
+inputs: []
+outputs: []
+"""
+    manifest_file = tmp_path / "manifest.yaml"
+    manifest_file.write_text(manifest_yaml)
+
+    with pytest.raises(InvalidManifest) as excinfo:
+        Manifest.load_from_file(manifest_file, overrides={"alias": "invalid alias"})
+
+    [error] = excinfo.value.errors
+    assert error.location == ("alias",)
+    assert error.line is None
