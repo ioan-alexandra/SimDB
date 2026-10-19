@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from simdb.cli.manifest import DataType, InvalidManifest, Manifest
+from simdb.cli.manifest import DataType, InvalidManifestError, Manifest
 
 
 def test_valid_manifest_loading_and_validation(tmp_path):
@@ -106,7 +106,7 @@ outputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(InvalidManifest, match="Input should be 2"):
+    with pytest.raises(InvalidManifestError, match="Input should be 2"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -119,7 +119,7 @@ outputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(InvalidManifest, match="Input should be 2"):
+    with pytest.raises(InvalidManifestError, match="Input should be 2"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -133,7 +133,7 @@ unknown_field: true
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(InvalidManifest, match="Extra inputs are not permitted"):
+    with pytest.raises(InvalidManifestError, match="Extra inputs are not permitted"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -147,7 +147,7 @@ outputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(InvalidManifest, match="illegal characters in alias"):
+    with pytest.raises(InvalidManifestError, match="illegal characters in alias"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -162,7 +162,7 @@ outputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(InvalidManifest, match="Duplicate URI found in inputs"):
+    with pytest.raises(InvalidManifestError, match="Duplicate URI found in inputs"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -177,7 +177,7 @@ metadata:
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(InvalidManifest, match="contains forbidden character"):
+    with pytest.raises(InvalidManifestError, match="contains forbidden character"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -191,7 +191,7 @@ outputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(InvalidManifest, match="No files found matching path"):
+    with pytest.raises(InvalidManifestError, match="No files found matching path"):
         Manifest.load_from_file(manifest_file)
 
 
@@ -204,7 +204,7 @@ inputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(InvalidManifest) as excinfo:
+    with pytest.raises(InvalidManifestError) as excinfo:
         Manifest.load_from_file(manifest_file)
 
     [error] = excinfo.value.errors
@@ -229,7 +229,7 @@ unknown_field: true
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(InvalidManifest) as excinfo:
+    with pytest.raises(InvalidManifestError) as excinfo:
         Manifest.load_from_file(manifest_file)
 
     errors = [(e.line, e.column, e.location, e.message) for e in excinfo.value.errors]
@@ -260,9 +260,82 @@ outputs: []
     manifest_file = tmp_path / "manifest.yaml"
     manifest_file.write_text(manifest_yaml)
 
-    with pytest.raises(InvalidManifest) as excinfo:
+    with pytest.raises(InvalidManifestError) as excinfo:
         Manifest.load_from_file(manifest_file, overrides={"alias": "invalid alias"})
 
     [error] = excinfo.value.errors
     assert error.location == ("alias",)
     assert error.line is None
+    assert error.message.endswith("(overridden value, not from the file)")
+
+
+@pytest.mark.parametrize("content", ["", "- a\n- b\n", "just a string\n"])
+def test_non_mapping_manifest_is_reported(tmp_path, content):
+    manifest_file = tmp_path / "manifest.yaml"
+    manifest_file.write_text(content)
+
+    with pytest.raises(InvalidManifestError) as excinfo:
+        Manifest.load_from_file(manifest_file)
+
+    [error] = excinfo.value.errors
+    assert "instance of Manifest" not in error.message
+    assert error.message.startswith("manifest ")
+
+
+@pytest.mark.parametrize(
+    "value, message",
+    [
+        ("!ndarray {dtype: float}", "!ndarray requires a 'data' entry"),
+        ("!ndarray {data: [1], dtype: nope}", "invalid !ndarray: data type 'nope'"),
+    ],
+)
+def test_invalid_ndarray_reports_line_and_reason(tmp_path, value, message):
+    manifest_yaml = f"""\
+manifest_version: 2
+metadata:
+  - x: {value}
+"""
+    manifest_file = tmp_path / "manifest.yaml"
+    manifest_file.write_text(manifest_yaml)
+
+    with pytest.raises(InvalidManifestError) as excinfo:
+        Manifest.load_from_file(manifest_file)
+
+    [error] = excinfo.value.errors
+    assert (error.line, error.column) == (3, 8)
+    assert error.message.startswith(message)
+
+
+def test_version_1_errors_point_at_the_file_as_written(tmp_path):
+    manifest_yaml = """\
+manifest_version: 1
+alias: x y
+outputs:
+  - uri: foo:///bar
+metadata:
+  - values:
+      ok: 1
+      "a:b": 1
+  - values: 5
+bogus: 2
+"""
+    manifest_file = tmp_path / "manifest.yaml"
+    manifest_file.write_text(manifest_yaml)
+
+    with pytest.raises(InvalidManifestError) as excinfo, pytest.warns(
+        DeprecationWarning
+    ):
+        Manifest.load_from_file(manifest_file)
+
+    errors = [(e.line, e.location, e.message) for e in excinfo.value.errors]
+    assert errors == [
+        (2, ("alias",), "illegal characters in alias: x y"),
+        (4, ("outputs", 0, "uri"), "URL scheme should be 'file' or 'imas'"),
+        (
+            6,
+            ("metadata", 0, "values"),
+            "invalid metadata field name a:b - contains forbidden character(s): :",
+        ),
+        (9, ("metadata", 1, "values"), "Input should be a valid dictionary"),
+        (10, ("bogus",), "Extra inputs are not permitted"),
+    ]
