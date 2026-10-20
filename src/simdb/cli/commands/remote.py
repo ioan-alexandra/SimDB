@@ -13,7 +13,7 @@ from simdb.cli.remote_api import RemoteAPI
 from simdb.database.models.simulation import Simulation
 from simdb.notifications import Notification
 
-from . import check_meta_args, pass_config
+from . import check_meta_args, pass_config, query_help
 from .utils import print_simulations, print_trace
 from .validators import validate_non_negative, validate_positive
 
@@ -434,7 +434,7 @@ def remote_trace(api: RemoteAPI, sim_id: str):
     print_trace(trace_data)
 
 
-@remote.command("query", cls=remote_command_cls())
+@remote.command("query", cls=remote_command_cls(), help=query_help("remote", "remote"))
 @pass_api
 @pass_config
 @click.argument("constraints", nargs=-1)
@@ -469,60 +469,6 @@ def remote_query(
     limit: int,
     show_uuid: bool,
 ):
-    """Perform a metadata query to find matching remote simulations.
-
-    \b
-    Each constraint must be in the form:
-        NAME=[mod]VALUE
-
-    \b
-    Where `[mod]` is an optional query modifier. Available query modifiers are:
-        eq:  - This checks for equality (this is the same behaviour as not providing
-               any modifier).
-        ne:  - This checks for values that do not equal.
-        in:  - This searches inside the value instead of looking for exact matches.
-        ni:  - This searches inside the value for elements that do not match.
-        gt:  - This checks for values greater than the given quantity.
-        agt: - This checks for any array elements are greater than the given quantity.
-        ge:  - This checks for values greater than or equal to the given quantity.
-        age: - This checks for any array elements are greater than or equal to the given
-               quantity.
-        lt:  - This checks for values less than the given quantity.
-        alt: - This checks for any array elements are less than the given quantity.
-        le:  - This checks for values less than or equal to the given quantity.
-        ale: - This checks for any array elements are less than or equal to the given
-               quantity.
-
-    \b
-    For the following modifiers, VALUE should not be provided.
-        exist: - This returns simulations where metadata with NAME exists, regardless
-                 of the value.
-
-    \b
-    Modifier examples:
-        alias=eq:foo                                        performs exact match
-        code.name=in:foo                                    matches all names
-            containing foo
-        heating_current_drive.power_additional.value=agt:0  matches all
-            simulations where any array element of
-            heating_current_drive.power_additional.value is greater than 0
-        sequence=exist:                                     matches all simulations
-            that have "sequence" metadata values
-
-    \b
-    Any string comparisons are done in a case-insensitive manner. If multiple
-    constraints are provided then simulations are returned that match all given
-    constraints.
-
-    \b
-    Examples:
-        sim remote query workflow.name=in:test       finds all simulations where
-                                                     workflow.name contains test
-                                                     (case-insensitive)
-        sim remote query global_quantities.r0.value=gt:6 machine=ITER
-                                                     finds all ITER simulations
-                                                     where r0 is > 6
-    """
     if not constraints:
         raise click.ClickException("At least one constraint must be provided.")
 
