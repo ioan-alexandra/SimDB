@@ -479,7 +479,9 @@ def remote_query(
     Where `[mod]` is an optional query modifier. Available query modifiers are:
         eq:  - This checks for equality (this is the same behaviour as not providing
                any modifier).
+        ne:  - This checks for values that do not equal.
         in:  - This searches inside the value instead of looking for exact matches.
+        ni:  - This searches inside the value for elements that do not match.
         gt:  - This checks for values greater than the given quantity.
         agt: - This checks for any array elements are greater than the given quantity.
         ge:  - This checks for values greater than or equal to the given quantity.
@@ -489,16 +491,23 @@ def remote_query(
         alt: - This checks for any array elements are less than the given quantity.
         le:  - This checks for values less than or equal to the given quantity.
         ale: - This checks for any array elements are less than or equal to the given
-                quantity.
+               quantity.
+
+    \b
+    For the following modifiers, VALUE should not be provided.
+        exist: - This returns simulations where metadata with NAME exists, regardless
+                 of the value.
 
     \b
     Modifier examples:
-        alias=eq:foo                                                performs exact match
-        summary.code.name=in:foo                                    matches all names
+        alias=eq:foo                                        performs exact match
+        code.name=in:foo                                    matches all names
             containing foo
-        summary.heating_current_drive.power_additional.value=agt:0  matches all
+        heating_current_drive.power_additional.value=agt:0  matches all
             simulations where any array element of
-            summary.heating_current_drive.power_additional.value is greater than 0
+            heating_current_drive.power_additional.value is greater than 0
+        sequence=exist:                                     matches all simulations
+            that have "sequence" metadata values
 
     \b
     Any string comparisons are done in a case-insensitive manner. If multiple
@@ -510,8 +519,9 @@ def remote_query(
         sim remote query workflow.name=in:test       finds all simulations where
                                                      workflow.name contains test
                                                      (case-insensitive)
-        sim remote query pulse=gt:1000 run=0         finds all simulations where pulse
-                                                     is > 1000 and run = 0
+        sim remote query global_quantities.r0.value=gt:6 machine=ITER
+                                                     finds all ITER simulations
+                                                     where r0 is > 6
     """
     if not constraints:
         raise click.ClickException("At least one constraint must be provided.")

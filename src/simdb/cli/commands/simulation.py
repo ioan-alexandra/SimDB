@@ -475,27 +475,34 @@ def simulation_query(
 
     \b
     Where `[mod]` is an optional query modifier. Available query modifiers are:
-        eq: - This checks for equality (this is the same behaviour as not providing any
-              modifier).
-        ne: - This checks for value that do not equal.
-        in: - This searches inside the value instead of looking for exact matches.
-        ni: - This searches inside the value for elements that do not match.
-        gt: - This checks for values greater than the given quantity.
-        ge: - This checks for values greater than or equal to the given quantity.
-        lt: - This checks for values less than the given quantity.
-        le: - This checks for values less than or equal to the given quantity.
+        eq:  - This checks for equality (this is the same behaviour as not providing
+               any modifier).
+        ne:  - This checks for values that do not equal.
+        in:  - This searches inside the value instead of looking for exact matches.
+        ni:  - This searches inside the value for elements that do not match.
+        gt:  - This checks for values greater than the given quantity.
+        agt: - This checks for any array elements are greater than the given quantity.
+        ge:  - This checks for values greater than or equal to the given quantity.
+        age: - This checks for any array elements are greater than or equal to the given
+               quantity.
+        lt:  - This checks for values less than the given quantity.
+        alt: - This checks for any array elements are less than the given quantity.
+        le:  - This checks for values less than or equal to the given quantity.
+        ale: - This checks for any array elements are less than or equal to the given
+               quantity.
 
+    \b
     For the following modifiers, VALUE should not be provided.
         exist: - This returns simulations where metadata with NAME exists, regardless
                  of the value.
 
     \b
     Modifier examples:
-        responsible_name=foo        performs exact match
-        responsible_name=in:foo     matches all names containing foo
-        pulse=gt:1000               matches all pulses > 1000
-        sequence=exist:             matches all simulations that have "sequence"
-                                    metadata values
+        responsible_name=foo             performs exact match
+        responsible_name=in:foo          matches all names containing foo
+        global_quantities.r0.value=gt:6  matches all simulations where r0 is > 6
+        sequence=exist:                  matches all simulations that have
+                                         "sequence" metadata values
 
     \b
     Any string comparisons are done in a case-insensitive manner. If multiple
@@ -507,8 +514,9 @@ def simulation_query(
         sim simulation query workflow.name=in:test       finds all simulations where
                                                          workflow.name contains test
                                                          (case-insensitive)
-        sim simulation query pulse=gt:1000 run=0         finds all simulations where
-                                                         pulse is > 1000 and run = 0
+        sim simulation query global_quantities.r0.value=gt:6 machine=ITER
+                                                         finds all ITER simulations
+                                                         where r0 is > 6
     """
     if not constraints:
         raise click.ClickException("At least one constraint must be provided.")
