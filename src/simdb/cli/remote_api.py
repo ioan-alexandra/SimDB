@@ -29,7 +29,7 @@ from typing import (
     Union,
     cast,
 )
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import appdirs
 import click
@@ -900,19 +900,19 @@ class RemoteAPI:
         self, sim_id: str, user: str, email: str, notification: "Watcher.Notification"
     ) -> None:
         self.post(
-            "watchers/" + quote(sim_id, safe="/"),
+            "watchers/" + sim_id,
             {"user": user, "email": email, "notification": notification.name},
         )
 
     @versioned_method("v1.2", "v1.3")
     @try_request
     def remove_watcher(self, sim_id: str, user: str) -> None:
-        self.delete("watchers/" + quote(sim_id, safe="/"), {"user": user})
+        self.delete("watchers/" + sim_id, {"user": user})
 
     @versioned_method("v1.2", "v1.3")
     @try_request
     def list_watchers(self, sim_id: str) -> List[Tuple]:
-        res = self.get("watchers/" + quote(sim_id, safe="/"))
+        res = self.get("watchers/" + sim_id)
         return [(d["username"], d["email"], d["notification"]) for d in res.json()]
 
     @versioned_method("v1.2", "v1.3")
